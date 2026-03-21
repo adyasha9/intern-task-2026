@@ -1,4 +1,26 @@
+from __future__ import annotations
+
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+
+VALID_ERROR_TYPES = {
+    "grammar",
+    "spelling",
+    "word_choice",
+    "punctuation",
+    "word_order",
+    "missing_word",
+    "extra_word",
+    "conjugation",
+    "gender_agreement",
+    "number_agreement",
+    "tone_register",
+    "other",
+}
+
+VALID_DIFFICULTIES = {"A1", "A2", "B1", "B2", "C1", "C2"}
 
 
 class ErrorDetail(BaseModel):
@@ -6,7 +28,20 @@ class ErrorDetail(BaseModel):
         description="The erroneous word or phrase from the original sentence"
     )
     correction: str = Field(description="The corrected word or phrase")
-    error_type: str = Field(description="Category of the error")
+    error_type: Literal[
+        "grammar",
+        "spelling",
+        "word_choice",
+        "punctuation",
+        "word_order",
+        "missing_word",
+        "extra_word",
+        "conjugation",
+        "gender_agreement",
+        "number_agreement",
+        "tone_register",
+        "other",
+    ] = Field(description="Category of the error")
     explanation: str = Field(
         description="A brief, learner-friendly explanation written in the native language"
     )
@@ -34,6 +69,6 @@ class FeedbackResponse(BaseModel):
         default_factory=list,
         description="List of errors found. Empty if the sentence is correct.",
     )
-    difficulty: str = Field(
+    difficulty: Literal["A1", "A2", "B1", "B2", "C1", "C2"] = Field(
         description="CEFR difficulty level: A1, A2, B1, B2, C1, or C2"
     )

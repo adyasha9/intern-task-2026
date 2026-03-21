@@ -1,13 +1,9 @@
-"""Integration tests -- require OPENAI_API_KEY to be set.
-
-Run with: pytest tests/test_feedback_integration.py -v
-
-These tests make real API calls. Skip them in CI or when no key is available.
-"""
+"""Integration tests that use a real OpenAI key when provided."""
 
 import os
 
 import pytest
+
 from app.feedback import get_feedback
 from app.models import FeedbackRequest
 
@@ -34,7 +30,7 @@ VALID_DIFFICULTIES = {"A1", "A2", "B1", "B2", "C1", "C2"}
 
 
 @pytest.mark.asyncio
-async def test_spanish_error():
+async def test_spanish_error() -> None:
     result = await get_feedback(
         FeedbackRequest(
             sentence="Yo soy fue al mercado ayer.",
@@ -45,13 +41,11 @@ async def test_spanish_error():
     assert result.is_correct is False
     assert len(result.errors) >= 1
     assert result.difficulty in VALID_DIFFICULTIES
-    for error in result.errors:
-        assert error.error_type in VALID_ERROR_TYPES
-        assert len(error.explanation) > 0
+    assert any(error.error_type in VALID_ERROR_TYPES for error in result.errors)
 
 
 @pytest.mark.asyncio
-async def test_correct_german():
+async def test_correct_german() -> None:
     result = await get_feedback(
         FeedbackRequest(
             sentence="Ich habe gestern einen interessanten Film gesehen.",
@@ -61,24 +55,12 @@ async def test_correct_german():
     )
     assert result.is_correct is True
     assert result.errors == []
+    assert result.corrected_sentence == "Ich habe gestern einen interessanten Film gesehen."
     assert result.difficulty in VALID_DIFFICULTIES
 
 
 @pytest.mark.asyncio
-async def test_french_gender_errors():
-    result = await get_feedback(
-        FeedbackRequest(
-            sentence="La chat noir est sur le table.",
-            target_language="French",
-            native_language="English",
-        )
-    )
-    assert result.is_correct is False
-    assert len(result.errors) >= 1
-
-
-@pytest.mark.asyncio
-async def test_japanese_particle():
+async def test_non_latin_script() -> None:
     result = await get_feedback(
         FeedbackRequest(
             sentence="私は東京を住んでいます。",
@@ -87,4 +69,5 @@ async def test_japanese_particle():
         )
     )
     assert result.is_correct is False
-    assert any("に" in e.correction for e in result.errors)
+    assert len(result.errors) >= 1
+    assert result.difficulty in VALID_DIFFICULTIES

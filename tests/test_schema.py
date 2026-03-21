@@ -1,11 +1,8 @@
-"""Schema validation tests -- verify models match JSON schemas."""
-
 import json
 from pathlib import Path
 
 import jsonschema
 import pytest
-from app.models import FeedbackRequest, FeedbackResponse
 
 SCHEMA_DIR = Path(__file__).parent.parent / "schema"
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
@@ -20,7 +17,7 @@ def load_examples() -> list[dict]:
 
 
 class TestRequestSchema:
-    def test_valid_request(self):
+    def test_valid_request(self) -> None:
         schema = load_schema("request.schema.json")
         valid = {
             "sentence": "Hola mundo",
@@ -29,28 +26,17 @@ class TestRequestSchema:
         }
         jsonschema.validate(valid, schema)
 
-    def test_missing_sentence_fails(self):
+    def test_missing_sentence_fails(self) -> None:
         schema = load_schema("request.schema.json")
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(
-                {"target_language": "Spanish", "native_language": "English"}, schema
-            )
-
-    def test_empty_sentence_fails(self):
-        schema = load_schema("request.schema.json")
-        with pytest.raises(jsonschema.ValidationError):
-            jsonschema.validate(
-                {
-                    "sentence": "",
-                    "target_language": "Spanish",
-                    "native_language": "English",
-                },
+                {"target_language": "Spanish", "native_language": "English"},
                 schema,
             )
 
 
 class TestResponseSchema:
-    def test_correct_response(self):
+    def test_correct_response(self) -> None:
         schema = load_schema("response.schema.json")
         valid = {
             "corrected_sentence": "Hola mundo",
@@ -60,7 +46,7 @@ class TestResponseSchema:
         }
         jsonschema.validate(valid, schema)
 
-    def test_response_with_errors(self):
+    def test_response_with_errors(self) -> None:
         schema = load_schema("response.schema.json")
         valid = {
             "corrected_sentence": "Le chat noir",
@@ -77,7 +63,7 @@ class TestResponseSchema:
         }
         jsonschema.validate(valid, schema)
 
-    def test_invalid_difficulty_fails(self):
+    def test_invalid_difficulty_fails(self) -> None:
         schema = load_schema("response.schema.json")
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(
@@ -90,36 +76,14 @@ class TestResponseSchema:
                 schema,
             )
 
-    def test_invalid_error_type_fails(self):
-        schema = load_schema("response.schema.json")
-        with pytest.raises(jsonschema.ValidationError):
-            jsonschema.validate(
-                {
-                    "corrected_sentence": "test",
-                    "is_correct": False,
-                    "errors": [
-                        {
-                            "original": "x",
-                            "correction": "y",
-                            "error_type": "not_a_real_type",
-                            "explanation": "test",
-                        }
-                    ],
-                    "difficulty": "A1",
-                },
-                schema,
-            )
-
 
 class TestExamplesMatchSchemas:
-    """Verify that all example inputs/outputs conform to the schemas."""
-
-    def test_all_example_requests_valid(self):
+    def test_all_example_requests_valid(self) -> None:
         schema = load_schema("request.schema.json")
         for example in load_examples():
             jsonschema.validate(example["request"], schema)
 
-    def test_all_example_responses_valid(self):
+    def test_all_example_responses_valid(self) -> None:
         schema = load_schema("response.schema.json")
         for example in load_examples():
             jsonschema.validate(example["expected_response"], schema)

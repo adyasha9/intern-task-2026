@@ -41,21 +41,22 @@ async def test_spanish_error() -> None:
     assert result.is_correct is False
     assert len(result.errors) >= 1
     assert result.difficulty in VALID_DIFFICULTIES
-    assert any(error.error_type in VALID_ERROR_TYPES for error in result.errors)
+    assert all(error.error_type in VALID_ERROR_TYPES for error in result.errors)
 
 
 @pytest.mark.asyncio
 async def test_correct_german() -> None:
+    sentence = "Ich habe gestern einen interessanten Film gesehen."
     result = await get_feedback(
         FeedbackRequest(
-            sentence="Ich habe gestern einen interessanten Film gesehen.",
+            sentence=sentence,
             target_language="German",
             native_language="English",
         )
     )
     assert result.is_correct is True
     assert result.errors == []
-    assert result.corrected_sentence == "Ich habe gestern einen interessanten Film gesehen."
+    assert result.corrected_sentence == sentence
     assert result.difficulty in VALID_DIFFICULTIES
 
 
@@ -71,3 +72,17 @@ async def test_non_latin_script() -> None:
     assert result.is_correct is False
     assert len(result.errors) >= 1
     assert result.difficulty in VALID_DIFFICULTIES
+
+
+@pytest.mark.asyncio
+async def test_right_to_left_script() -> None:
+    result = await get_feedback(
+        FeedbackRequest(
+            sentence="أنا يذهب إلى المدرسة كل يوم.",
+            target_language="Arabic",
+            native_language="English",
+        )
+    )
+    assert result.difficulty in VALID_DIFFICULTIES
+    assert result.corrected_sentence
+    assert all(error.error_type in VALID_ERROR_TYPES for error in result.errors)

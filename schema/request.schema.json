@@ -18,14 +18,14 @@
       "minLength": 2,
       "maxLength": 80,
       "pattern": ".*\\S.*",
-      "description": "The language the learner is studying (e.g., 'Spanish', 'Japanese', 'French')"
+      "description": "The language the learner is studying (for example: Spanish, Japanese, French)"
     },
     "native_language": {
       "type": "string",
       "minLength": 2,
       "maxLength": 80,
       "pattern": ".*\\S.*",
-      "description": "The learner's native language -- explanations will be written in this language (e.g., 'English')"
+      "description": "The learner's native language. Explanations should be returned in this language."
     }
   }
 }

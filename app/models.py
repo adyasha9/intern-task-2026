@@ -24,6 +24,32 @@ VALID_DIFFICULTIES = {"A1", "A2", "B1", "B2", "C1", "C2"}
 
 MAX_SENTENCE_LENGTH = 2000
 MAX_LANGUAGE_LENGTH = 80
+_LANGUAGE_ALIASES = {
+    "en": "English",
+    "eng": "English",
+    "english": "English",
+    "es": "Spanish",
+    "spa": "Spanish",
+    "spanish": "Spanish",
+    "fr": "French",
+    "french": "French",
+    "de": "German",
+    "german": "German",
+    "pt": "Portuguese",
+    "portuguese": "Portuguese",
+    "ja": "Japanese",
+    "japanese": "Japanese",
+    "zh": "Chinese",
+    "chinese": "Chinese",
+    "hi": "Hindi",
+    "hindi": "Hindi",
+    "ko": "Korean",
+    "korean": "Korean",
+    "ru": "Russian",
+    "russian": "Russian",
+    "ar": "Arabic",
+    "arabic": "Arabic",
+}
 
 
 class StrictBaseModel(BaseModel):
@@ -79,12 +105,22 @@ class FeedbackRequest(StrictBaseModel):
         description="The learner's native language -- explanations will be in this language",
     )
 
-    @field_validator("sentence", "target_language", "native_language")
+    @field_validator("sentence")
     @classmethod
-    def reject_blank_values(cls, value: str) -> str:
-        if not value or not value.strip():
-            raise ValueError("Value must not be blank")
-        return value.strip()
+    def reject_blank_sentence(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Sentence must not be blank")
+        return normalized
+
+    @field_validator("target_language", "native_language")
+    @classmethod
+    def normalize_language(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Language must not be blank")
+        canonical = _LANGUAGE_ALIASES.get(normalized.casefold())
+        return canonical or normalized
 
 
 class FeedbackResponse(StrictBaseModel):

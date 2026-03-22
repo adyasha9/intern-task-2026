@@ -42,6 +42,18 @@ class TestRequestSchema:
                 schema,
             )
 
+    def test_request_string_length_limits_are_enforced(self) -> None:
+        schema = load_schema("request.schema.json")
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(
+                {
+                    "sentence": "x" * 2001,
+                    "target_language": "Spanish",
+                    "native_language": "English",
+                },
+                schema,
+            )
+
     def test_extra_request_field_fails(self) -> None:
         schema = load_schema("request.schema.json")
         with pytest.raises(jsonschema.ValidationError):
@@ -93,6 +105,26 @@ class TestResponseSchema:
                     "is_correct": True,
                     "errors": [],
                     "difficulty": "Z9",
+                },
+                schema,
+            )
+
+    def test_invalid_error_type_fails(self) -> None:
+        schema = load_schema("response.schema.json")
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(
+                {
+                    "corrected_sentence": "Hola mundo",
+                    "is_correct": False,
+                    "errors": [
+                        {
+                            "original": "Hola",
+                            "correction": "Hola",
+                            "error_type": "invalid",
+                            "explanation": "Explanation",
+                        }
+                    ],
+                    "difficulty": "A1",
                 },
                 schema,
             )

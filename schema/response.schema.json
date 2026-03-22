@@ -10,7 +10,8 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 2000,
-      "description": "The grammatically corrected version of the input sentence. If the input was already correct, this should be identical to the input sentence."
+      "pattern": ".*\\S.*",
+      "description": "The minimally corrected version of the input sentence. If the input was already correct, this should be identical to the input sentence."
     },
     "is_correct": {
       "type": "boolean",
@@ -28,12 +29,14 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 500,
+            "pattern": ".*\\S.*",
             "description": "The erroneous word or phrase from the original sentence"
           },
           "correction": {
             "type": "string",
             "minLength": 1,
             "maxLength": 500,
+            "pattern": ".*\\S.*",
             "description": "The corrected word or phrase"
           },
           "error_type": {
@@ -58,6 +61,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 600,
+            "pattern": ".*\\S.*",
             "description": "A brief, learner-friendly explanation of the error, written in the native language"
           }
         }

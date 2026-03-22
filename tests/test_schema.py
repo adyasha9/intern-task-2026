@@ -34,6 +34,27 @@ class TestRequestSchema:
                 schema,
             )
 
+    def test_blank_sentence_fails(self) -> None:
+        schema = load_schema("request.schema.json")
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(
+                {"sentence": "   ", "target_language": "Spanish", "native_language": "English"},
+                schema,
+            )
+
+    def test_extra_request_field_fails(self) -> None:
+        schema = load_schema("request.schema.json")
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(
+                {
+                    "sentence": "Hola",
+                    "target_language": "Spanish",
+                    "native_language": "English",
+                    "unexpected": True,
+                },
+                schema,
+            )
+
 
 class TestResponseSchema:
     def test_correct_response(self) -> None:
@@ -72,6 +93,27 @@ class TestResponseSchema:
                     "is_correct": True,
                     "errors": [],
                     "difficulty": "Z9",
+                },
+                schema,
+            )
+
+    def test_extra_error_field_fails(self) -> None:
+        schema = load_schema("response.schema.json")
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(
+                {
+                    "corrected_sentence": "Hola mundo",
+                    "is_correct": False,
+                    "errors": [
+                        {
+                            "original": "Hola",
+                            "correction": "Hola",
+                            "error_type": "other",
+                            "explanation": "Explanation",
+                            "extra": "nope",
+                        }
+                    ],
+                    "difficulty": "A1",
                 },
                 schema,
             )

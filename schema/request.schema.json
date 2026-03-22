@@ -9,16 +9,22 @@
     "sentence": {
       "type": "string",
       "minLength": 1,
+      "maxLength": 2000,
+      "pattern": ".*\\S.*",
       "description": "The learner's sentence in the target language to analyze"
     },
     "target_language": {
       "type": "string",
       "minLength": 2,
+      "maxLength": 80,
+      "pattern": ".*\\S.*",
       "description": "The language the learner is studying (e.g., 'Spanish', 'Japanese', 'French')"
     },
     "native_language": {
       "type": "string",
       "minLength": 2,
+      "maxLength": 80,
+      "pattern": ".*\\S.*",
       "description": "The learner's native language -- explanations will be written in this language (e.g., 'English')"
     }
   }

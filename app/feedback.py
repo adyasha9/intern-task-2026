@@ -3,13 +3,21 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
+import time
+from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Any
 
 try:
-    from openai import AsyncOpenAI
-except ImportError:  
+    from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, RateLimitError
+except ImportError:  # pragma: no cover - handled at runtime in environments without deps
+    APIConnectionError = None
+    APIStatusError = None
+    APITimeoutError = None
     AsyncOpenAI = None
+    RateLimitError = None
 
 from app.models import (
     FeedbackRequest,
@@ -17,6 +25,8 @@ from app.models import (
     VALID_DIFFICULTIES,
     VALID_ERROR_TYPES,
 )
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are an expert multilingual language-learning feedback engine.
 
@@ -54,14 +64,59 @@ Hard rules:
 8. Each error should align to a real edit in the corrected sentence.
 9. Keep explanations concise, learner-friendly, and specific.
 10. Support any language and any writing system.
+11. Never invent an error if the sentence is already correct.
+12. If there are edits, provide at least one error entry describing them.
 """
 
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "25"))
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 MAX_OUTPUT_TOKENS = int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "700"))
+CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "300"))
+CACHE_MAX_ENTRIES = int(os.getenv("CACHE_MAX_ENTRIES", "256"))
+MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
+INITIAL_RETRY_DELAY_SECONDS = float(os.getenv("OPENAI_INITIAL_RETRY_DELAY_SECONDS", "0.5"))
 
 
-_CACHE: dict[str, FeedbackResponse] = {}
+class FeedbackError(Exception):
+    """Base error for feedback generation."""
+
+
+class MissingAPIKeyError(FeedbackError):
+    pass
+
+
+class UpstreamTimeoutError(FeedbackError):
+    pass
+
+
+class UpstreamAuthError(FeedbackError):
+    pass
+
+
+class UpstreamRateLimitError(FeedbackError):
+    pass
+
+
+class UpstreamTemporaryError(FeedbackError):
+    pass
+
+
+class UpstreamBadResponseError(FeedbackError):
+    pass
+
+
+class InputGuardrailError(FeedbackError):
+    pass
+
+
+@dataclass(slots=True)
+class CacheEntry:
+    value: FeedbackResponse
+    expires_at: float
+
+
+_CACHE: "OrderedDict[str, CacheEntry]" = OrderedDict()
+_CLIENT: AsyncOpenAI | None = None
 
 
 def _cache_key(request: FeedbackRequest) -> str:
@@ -69,11 +124,42 @@ def _cache_key(request: FeedbackRequest) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _get_cached(key: str) -> FeedbackResponse | None:
+    entry = _CACHE.get(key)
+    now = time.time()
+    if entry is None:
+        return None
+    if entry.expires_at <= now:
+        _CACHE.pop(key, None)
+        return None
+    _CACHE.move_to_end(key)
+    return entry.value
+
+
+def _set_cached(key: str, value: FeedbackResponse) -> None:
+    _CACHE[key] = CacheEntry(value=value, expires_at=time.time() + CACHE_TTL_SECONDS)
+    _CACHE.move_to_end(key)
+    while len(_CACHE) > CACHE_MAX_ENTRIES:
+        _CACHE.popitem(last=False)
+
+
+def _get_client() -> AsyncOpenAI:
+    global _CLIENT
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise MissingAPIKeyError("OPENAI_API_KEY is not set. Add a valid key to .env or the environment.")
+    if AsyncOpenAI is None:
+        raise RuntimeError("openai package is not installed. Install dependencies from requirements.txt.")
+    if _CLIENT is None:
+        _CLIENT = AsyncOpenAI(api_key=api_key)
+    return _CLIENT
+
+
+
 def _extract_text(response: Any) -> str:
     if hasattr(response, "output_text") and response.output_text:
         return response.output_text
 
-    # Fallback for SDK variants.
     output = getattr(response, "output", None) or []
     collected: list[str] = []
     for item in output:
@@ -84,22 +170,35 @@ def _extract_text(response: Any) -> str:
     if collected:
         return "\n".join(collected)
 
-    raise ValueError("Model response did not contain text output")
+    raise UpstreamBadResponseError("Model response did not contain text output")
+
 
 
 def _extract_json(text: str) -> dict[str, Any]:
     stripped = text.strip()
     try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start == -1 or end == -1 or end < start:
-            raise ValueError("Model did not return valid JSON")
-        return json.loads(stripped[start : end + 1])
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        decoder = json.JSONDecoder()
+        for start_index, char in enumerate(stripped):
+            if char != "{":
+                continue
+            try:
+                parsed, end_index = decoder.raw_decode(stripped[start_index:])
+            except json.JSONDecodeError:
+                continue
+            trailing = stripped[start_index + end_index :].strip()
+            if isinstance(parsed, dict) and not trailing:
+                return parsed
+        raise UpstreamBadResponseError("Model did not return valid JSON") from exc
+
+    if not isinstance(parsed, dict):
+        raise UpstreamBadResponseError("Model JSON response must be an object")
+    return parsed
 
 
-def _sanitize_error(error: dict[str, Any]) -> dict[str, str]:
+
+def _sanitize_error(error: dict[str, Any], request: FeedbackRequest) -> dict[str, str]:
     original = str(error.get("original", "")).strip()
     correction = str(error.get("correction", "")).strip()
     explanation = str(error.get("explanation", "")).strip()
@@ -108,12 +207,15 @@ def _sanitize_error(error: dict[str, Any]) -> dict[str, str]:
     if error_type not in VALID_ERROR_TYPES:
         error_type = "other"
 
+    if not original and not correction:
+        raise UpstreamBadResponseError("Each error must include original or correction text")
+
     if not original:
-        original = correction or ""
+        original = correction
     if not correction:
         correction = original
     if not explanation:
-        explanation = "Please compare the original and corrected forms."
+        explanation = f"Please explain this correction in {request.native_language}."
 
     return {
         "original": original,
@@ -123,8 +225,14 @@ def _sanitize_error(error: dict[str, Any]) -> dict[str, str]:
     }
 
 
+
+def _response_has_meaningful_change(original: str, corrected: str) -> bool:
+    return original.strip() != corrected.strip()
+
+
+
 def _sanitize_response(data: dict[str, Any], request: FeedbackRequest) -> FeedbackResponse:
-    corrected_sentence = str(data.get("corrected_sentence", request.sentence)).strip()
+    corrected_sentence = str(data.get("corrected_sentence", request.sentence)).strip() or request.sentence
     difficulty = str(data.get("difficulty", "A1")).strip()
     errors_raw = data.get("errors", [])
     is_correct = bool(data.get("is_correct", False))
@@ -133,22 +241,26 @@ def _sanitize_response(data: dict[str, Any], request: FeedbackRequest) -> Feedba
         difficulty = "A1"
 
     if not isinstance(errors_raw, list):
-        errors_raw = []
+        raise UpstreamBadResponseError("Model response field 'errors' must be a list")
 
-    errors = [_sanitize_error(item) for item in errors_raw if isinstance(item, dict)]
+    errors = [_sanitize_error(item, request) for item in errors_raw if isinstance(item, dict)]
+    sentence_changed = _response_has_meaningful_change(request.sentence, corrected_sentence)
 
     if is_correct:
         corrected_sentence = request.sentence
         errors = []
-    elif not errors and corrected_sentence == request.sentence:
-        is_correct = True
-    elif not errors and corrected_sentence != request.sentence:
+    elif not sentence_changed:
+        if errors:
+            corrected_sentence = request.sentence
+        else:
+            is_correct = True
+    elif sentence_changed and not errors:
         errors = [
             {
                 "original": request.sentence,
                 "correction": corrected_sentence,
                 "error_type": "other",
-                "explanation": f"The sentence was adjusted to sound natural in {request.target_language}.",
+                "explanation": f"Please explain the correction in {request.native_language}.",
             }
         ]
 
@@ -160,12 +272,27 @@ def _sanitize_response(data: dict[str, Any], request: FeedbackRequest) -> Feedba
     )
 
 
-async def _call_openai(request: FeedbackRequest) -> dict[str, Any]:
-    if AsyncOpenAI is None:
-        raise RuntimeError("openai package is not installed. Install dependencies from requirements.txt.")
 
-    client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+def _validate_input_guardrails(request: FeedbackRequest) -> None:
+    normalized_sentence = request.sentence.strip()
+    if not normalized_sentence:
+        raise InputGuardrailError("Sentence must not be blank")
+    if len(normalized_sentence) > 2000:
+        raise InputGuardrailError("Sentence exceeds maximum supported length")
+    lowered = normalized_sentence.lower()
+    suspicious_markers = [
+        "ignore previous instructions",
+        "system prompt",
+        "developer message",
+        "return yaml",
+        "```",
+    ]
+    if any(marker in lowered for marker in suspicious_markers):
+        raise InputGuardrailError("Sentence appears to contain prompt-injection content")
 
+
+async def _call_openai_once(request: FeedbackRequest) -> dict[str, Any]:
+    client = _get_client()
     user_message = (
         f"Target language: {request.target_language}\n"
         f"Native language: {request.native_language}\n"
@@ -186,24 +313,63 @@ async def _call_openai(request: FeedbackRequest) -> dict[str, Any]:
     return _extract_json(text)
 
 
+async def _call_openai_with_retries(request: FeedbackRequest) -> dict[str, Any]:
+    delay = INITIAL_RETRY_DELAY_SECONDS
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            return await _call_openai_once(request)
+        except MissingAPIKeyError:
+            raise
+        except UpstreamBadResponseError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - explicit translation below
+            is_last_attempt = attempt >= MAX_RETRIES
+            translated = _translate_openai_error(exc)
+            if isinstance(translated, (UpstreamBadResponseError, UpstreamAuthError)) or is_last_attempt:
+                raise translated from exc
+            logger.warning("Transient upstream error on attempt %s/%s: %s", attempt + 1, MAX_RETRIES + 1, translated)
+            await asyncio.sleep(delay)
+            delay *= 2
+
+    raise UpstreamTemporaryError("OpenAI request failed")
+
+
+
+def _translate_openai_error(exc: Exception) -> FeedbackError:
+    if isinstance(exc, FeedbackError):
+        return exc
+    if isinstance(exc, TimeoutError):
+        return UpstreamTimeoutError("LLM request timed out")
+    if APITimeoutError is not None and isinstance(exc, APITimeoutError):
+        return UpstreamTimeoutError("OpenAI request timed out")
+    if RateLimitError is not None and isinstance(exc, RateLimitError):
+        return UpstreamRateLimitError("OpenAI rate limit exceeded")
+    if APIStatusError is not None and isinstance(exc, APIStatusError):
+        if exc.status_code in {401, 403}:
+            return UpstreamAuthError("OpenAI authentication failed")
+        if exc.status_code == 429:
+            return UpstreamRateLimitError("OpenAI rate limit exceeded")
+        if 500 <= exc.status_code < 600:
+            return UpstreamTemporaryError(f"OpenAI service error ({exc.status_code})")
+        return UpstreamBadResponseError(f"OpenAI returned an unexpected status ({exc.status_code})")
+    if APIConnectionError is not None and isinstance(exc, APIConnectionError):
+        return UpstreamTemporaryError("OpenAI connection failed")
+    return UpstreamTemporaryError(f"OpenAI request failed: {exc}")
+
+
 async def get_feedback(request: FeedbackRequest) -> FeedbackResponse:
+    _validate_input_guardrails(request)
+
     key = _cache_key(request)
-    cached = _CACHE.get(key)
+    cached = _get_cached(key)
     if cached is not None:
         return cached
 
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError(
-            "OPENAI_API_KEY is not set. Add a valid key to .env or the environment."
-        )
-
     try:
-        data = await asyncio.wait_for(_call_openai(request), timeout=REQUEST_TIMEOUT_SECONDS)
+        data = await asyncio.wait_for(_call_openai_with_retries(request), timeout=REQUEST_TIMEOUT_SECONDS)
     except asyncio.TimeoutError as exc:
-        raise TimeoutError("LLM request timed out") from exc
-    except Exception as exc:
-        raise RuntimeError(f"OpenAI request failed: {exc}") from exc
+        raise UpstreamTimeoutError("LLM request timed out") from exc
 
     result = _sanitize_response(data, request)
-    _CACHE[key] = result
+    _set_cached(key, result)
     return result
